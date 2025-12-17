@@ -1,132 +1,193 @@
 import streamlit as st
 import pandas as pd
 import joblib
-import sqlite3
+import mysql.connector
+from mysql.connector import Error
 import datetime
 import numpy as np
 
 # ============================================
-# 1. CONFIGURAÇÃO DO BANCO DE DADOS (SQLite)
+# 1. CONFIGURAÇÕES E CREDENCIAIS (GCP MYSQL)
 # ============================================
+# ⚠️ ATENÇÃO: Substitua pelos dados reais do seu Google Cloud Platform
+DB_CONFIG = {
+    'host': '34.151.213.212',       # COLOQUE AQUI SEU IP PÚBLICO DA INSTÂNCIA GCP
+    'database': 'dados-pacientes',       # COLOQUE O NOME DO BANCO QUE VOCÊ CRIOU
+    'user': 'admin',               # USUÁRIO (Geralmente 'root')
+    'password': 'N8!pZ7@wQ3#rL9$s'  # A SENHA QUE VOCÊ DEFINIU NO GCP
+}
+
+# Configuração da Página
+st.set_page_config(page_title="Predição Diabetes AV4", page_icon="🏥", layout="centered")
+
+# ============================================
+# 2. FUNÇÕES DE BANCO DE DADOS (MySQL)
+# ============================================
+def get_db_connection():
+    """Tenta estabelecer conexão com o banco"""
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        if conn.is_connected():
+            return conn
+    except Error as e:
+        st.error(f"❌ Erro de conexão com o Banco de Dados: {e}")
+        return None
+
 def init_db():
-    conn = sqlite3.connect('interacoes.db')
-    c = conn.cursor()
-    c.execute('''
-        CREATE TABLE IF NOT EXISTS logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            inputs TEXT,
-            predicao TEXT,
-            data_hora TIMESTAMP
-        )
-    ''')
-    conn.commit()
-    conn.close()
+    """Cria a tabela de logs se ela não existir"""
+    conn = get_db_connection()
+    if conn:
+        cursor = conn.cursor()
+        try:
+            # Criação da tabela compatível com MySQL
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS logs (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    inputs TEXT,
+                    predicao VARCHAR(50),
+                    certeza FLOAT,
+                    data_hora TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            conn.commit()
+            cursor.close()
+            conn.close()
+        except Error as e:
+            st.error(f"Erro ao criar tabela: {e}")
 
-def salvar_interacao(inputs_dict, resultado):
-    conn = sqlite3.connect('interacoes.db')
-    c = conn.cursor()
-    # Converte o dicionário de inputs para string para salvar no banco
-    inputs_str = str(inputs_dict)
-    c.execute("INSERT INTO logs (inputs, predicao, data_hora) VALUES (?, ?, ?)",
-              (inputs_str, resultado, datetime.datetime.now()))
-    conn.commit()
-    conn.close()
+def salvar_interacao(inputs_dict, resultado, certeza):
+    """Salva o diagnóstico no banco da nuvem"""
+    conn = get_db_connection()
+    if conn:
+        cursor = conn.cursor()
+        try:
+            inputs_str = str(inputs_dict)
+            query = "INSERT INTO logs (inputs, predicao, certeza) VALUES (%s, %s, %s)"
+            valores = (inputs_str, resultado, float(certeza))
+            
+            cursor.execute(query, valores)
+            conn.commit()
+            cursor.close()
+            conn.close()
+            return True
+        except Error as e:
+            st.error(f"Erro ao salvar registro: {e}")
+            return False
 
-# Inicia o banco ao abrir
+# Inicializa a estrutura do banco ao abrir o app
 init_db()
 
 # ============================================
-# 2. CARREGAMENTO DO MODELO E PROCESSADORES
+# 3. CARREGAMENTO DA INTELIGÊNCIA ARTIFICIAL
 # ============================================
 @st.cache_resource
 def carregar_modelo():
     try:
-        # Carrega o dicionário com tudo que salvamos no Colab
+        # Tenta carregar o arquivo completo (Modelo + Scaler + Imputer)
         dados = joblib.load('modelo_diabetes_completo.pkl')
         return dados['modelo'], dados['scaler'], dados['imputer']
     except FileNotFoundError:
+        st.error("⚠️ Arquivo 'modelo_diabetes_completo.pkl' não encontrado!")
+        st.warning("Por favor, faça o upload do arquivo gerado no Colab para a mesma pasta deste script.")
+        return None, None, None
+    except Exception as e:
+        st.error(f"Erro ao carregar modelo: {e}")
         return None, None, None
 
 model, scaler, imputer = carregar_modelo()
 
 # ============================================
-# 3. INTERFACE DO USUÁRIO (STREAMLIT)
+# 4. INTERFACE DO USUÁRIO (FRONTEND)
 # ============================================
-st.set_page_config(page_title="Predição Diabetes AV4", page_icon="🏥")
+st.title("🏥 Sistema de Diagnóstico - Diabetes")
+st.markdown("**Projeto AV4** | Integração Machine Learning & Cloud Computing")
+st.markdown("---")
 
-st.title("🏥 Sistema de Auxílio Diagnóstico - Diabetes")
-st.markdown("Projeto AV4 - Lucas Pereira | Baseado no dataset Pima Indians")
-
-if model is None:
-    st.error("ERRO CRÍTICO: Arquivo 'modelo_diabetes_completo.pkl' não encontrado. Faça o upload dele para o GitHub.")
-else:
-    st.sidebar.header("Dados do Paciente")
+if model is not None:
+    st.sidebar.header("📝 Prontuário do Paciente")
     
-    # Formulário com as 8 features exatas do dataset
-    # Usando colunas para ficar mais bonito
+    # Inputs organizados em 2 colunas para melhor visualização
     col1, col2 = st.columns(2)
     
     with col1:
-        pregnancies = st.number_input("Nº de Gravidezes", 0, 20, 1)
-        glucose = st.number_input("Glicose (mg/dL)", 0, 300, 120)
-        blood_pressure = st.number_input("Pressão Sanguínea (mm Hg)", 0, 200, 70)
-        skin_thickness = st.number_input("Espessura da Pele (mm)", 0, 100, 20)
+        pregnancies = st.number_input("Gravidezes", min_value=0, max_value=20, value=0)
+        glucose = st.number_input("Glicose (mg/dL)", min_value=0, max_value=300, value=120, help="Nível de glicose no sangue")
+        blood_pressure = st.number_input("Pressão Sanguínea (mmHg)", min_value=0, max_value=200, value=70)
+        skin_thickness = st.number_input("Espessura da Pele (mm)", min_value=0, max_value=100, value=20)
     
     with col2:
-        insulin = st.number_input("Insulina (mu U/ml)", 0, 900, 79)
-        bmi = st.number_input("IMC (Índice de Massa Corporal)", 0.0, 70.0, 32.0)
-        dpf = st.number_input("Histórico Familiar (Pedigree 0-3)", 0.0, 3.0, 0.5)
-        age = st.number_input("Idade", 0, 120, 33)
+        insulin = st.number_input("Insulina (mu U/ml)", min_value=0, max_value=900, value=0)
+        bmi = st.number_input("IMC", min_value=0.0, max_value=70.0, value=32.0, format="%.1f")
+        dpf = st.number_input("Histórico Familiar (Pedigree)", min_value=0.0, max_value=3.0, value=0.5, format="%.2f")
+        age = st.number_input("Idade", min_value=0, max_value=120, value=33)
 
+    st.markdown("---")
+    
     # Botão de Ação
-    if st.button("Realizar Diagnóstico com IA"):
-        # 1. Organizar os dados na mesma ordem do treinamento
-        features = [pregnancies, glucose, blood_pressure, skin_thickness, insulin, bmi, dpf, age]
-        features_array = np.array(features).reshape(1, -1)
-        
-        # 2. Aplicar o Imputer (caso tenha zeros que precisem ser média, embora o input não permita zero onde não deve)
-        # Nota: O imputer espera 8 colunas.
-        features_imputed = imputer.transform(features_array)
-        
-        # 3. Aplicar o Scaler (Normalização) - O PASSO MAIS IMPORTANTE
-        features_scaled = scaler.transform(features_imputed)
-        
-        # 4. Fazer a Predição
-        prediction = model.predict(features_scaled)
-        probabilidade = model.predict_proba(features_scaled)
-        
-        # Lógica de Resultado
-        resultado_texto = "DIABÉTICO" if prediction[0] == 1 else "NÃO DIABÉTICO"
-        prob_percent = probabilidade[0][prediction[0]] * 100
-        
-        # 5. Exibir Resultado
-        st.divider()
-        if prediction[0] == 1:
-            st.error(f"### Resultado: {resultado_texto}")
-            st.warning(f"O modelo tem {prob_percent:.1f}% de certeza.")
-        else:
-            st.success(f"### Resultado: {resultado_texto}")
-            st.info(f"O modelo tem {prob_percent:.1f}% de certeza.")
-            
-        # 6. Salvar no Banco
-        dados_input_log = {
-            'Glicose': glucose,
-            'IMC': bmi,
-            'Idade': age,
-            'Resultado': resultado_texto
-        }
-        salvar_interacao(dados_input_log, resultado_texto)
-        st.toast("✅ Registro salvo no banco de dados!")
+    if st.button("🔍 Processar Diagnóstico", use_container_width=True):
+        with st.spinner('A Inteligência Artificial está analisando os dados...'):
+            try:
+                # 1. Organizar dados (A ordem DEVE ser a mesma do treinamento)
+                features = [pregnancies, glucose, blood_pressure, skin_thickness, insulin, bmi, dpf, age]
+                features_array = np.array(features).reshape(1, -1)
+                
+                # 2. Aplicar Imputação (Preencher zeros/nulos se necessário)
+                features_imputed = imputer.transform(features_array)
+                
+                # 3. Aplicar Normalização (Deixar na mesma escala do treino)
+                features_scaled = scaler.transform(features_imputed)
+                
+                # 4. Predição
+                prediction = model.predict(features_scaled)
+                proba = model.predict_proba(features_scaled)
+                
+                # Lógica de Exibição
+                classe = prediction[0]
+                confianca = proba[0][classe] * 100
+                resultado_texto = "DIABÉTICO" if classe == 1 else "SAUDÁVEL (Não Diabético)"
+                
+                # 5. Mostrar Resultado na Tela
+                if classe == 1:
+                    st.error(f"## 🚨 Resultado: {resultado_texto}")
+                    st.write(f"**Probabilidade calculada:** {confianca:.2f}% de certeza.")
+                else:
+                    st.success(f"## ✅ Resultado: {resultado_texto}")
+                    st.write(f"**Probabilidade calculada:** {confianca:.2f}% de certeza.")
+
+                # 6. Salvar no MySQL GCP
+                dados_log = {
+                    'Glicose': glucose,
+                    'IMC': bmi,
+                    'Idade': age,
+                    'BP': blood_pressure
+                }
+                
+                sucesso_db = salvar_interacao(dados_log, resultado_texto, confianca)
+                if sucesso_db:
+                    st.toast("✅ Registro salvo na nuvem com sucesso!", icon="☁️")
+                
+            except Exception as e:
+                st.error(f"Ocorreu um erro no processamento: {e}")
 
 # ============================================
-# 4. ÁREA ADMINISTRATIVA (Visualizar Banco)
+# 5. ÁREA ADMINISTRATIVA (VISUALIZAR BANCO)
 # ============================================
 st.divider()
-if st.checkbox("Mostrar Histórico de Diagnósticos (Admin)"):
-    conn = sqlite3.connect('interacoes.db')
-    try:
-        df_logs = pd.read_sql_query("SELECT * FROM logs ORDER BY data_hora DESC", conn)
-        st.dataframe(df_logs)
-    except:
-        st.write("Ainda não há registros.")
-    conn.close()
+st.subheader("🔐 Área Administrativa")
+
+if st.checkbox("Visualizar Banco de Dados (Google Cloud SQL)"):
+    conn = get_db_connection()
+    if conn:
+        try:
+            query = "SELECT * FROM logs ORDER BY data_hora DESC LIMIT 50"
+            df_logs = pd.read_sql(query, conn)
+            
+            if not df_logs.empty:
+                st.dataframe(df_logs, use_container_width=True)
+                st.info(f"Mostrando os últimos {len(df_logs)} registros da nuvem.")
+            else:
+                st.warning("Nenhum registro encontrado no banco de dados.")
+            
+            conn.close()
+        except Error as e:
+            st.error(f"Erro ao buscar dados: {e}")
